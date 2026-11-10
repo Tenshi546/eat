@@ -4,7 +4,7 @@ import aiosqlite
 import hashlib
 import random
 import string
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date
 from flask import Flask
 from threading import Thread
 from aiogram import Bot, Dispatcher, F
@@ -13,6 +13,7 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
+# ==== НАСТРОЙКИ ====
 BOT_TOKEN = "9259003904:AAGO259i8dQHPKln3PQbzDaj0iwkTAHTdt4"
 NORILSK_TZ = timezone(timedelta(hours=7))
 SECRET_CODES = ["ADMIN77", "BOSS999", "CHEF555", "GURU123"]
@@ -72,9 +73,7 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT, order_date TEXT, meals TEXT, created_at TEXT
             )
         """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS used_codes (code TEXT PRIMARY KEY)
-        """)
+        await db.execute("CREATE TABLE IF NOT EXISTS used_codes (username TEXT, code TEXT)")
         await db.commit()
 
 def hash_password(password: str):
@@ -122,15 +121,15 @@ async def start(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "reg_start")
 async def reg_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
-    if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм в Телеграме!")
+    if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
     await state.update_data(username=f"@{username}", is_admin=False)
-    await call.message.edit_text("Введи свои ФИО русскими буквами (например: ИВАНОВ ИВАН ИВАНОВИЧ):")
+    await call.message.edit_text("Введи свои ФИО русскими буквами:")
     await state.set_state(Reg.waiting_fio)
 
 @dp.callback_query(F.data == "reg_admin")
 async def reg_admin_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
-    if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм в Телеграме!")
+    if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
     await state.update_data(username=f"@{username}", is_admin=True)
     await call.message.edit_text("Введи свои ФИО русскими буквами:")
     await state.set_state(Reg.waiting_fio)
@@ -138,13 +137,13 @@ async def reg_admin_start(call: CallbackQuery, state: FSMContext):
 @dp.message(Reg.waiting_fio)
 async def reg_fio(message: Message, state: FSMContext):
     await state.update_data(fio=message.text.strip().upper())
-    await message.answer("Придумай пароль (латиницей и цифрами):")
+    await message.answer("Придумай пароль:")
     await state.set_state(Reg.waiting_password)
 
 @dp.message(Reg.waiting_password)
 async def reg_pass(message: Message, state: FSMContext):
     pwd = message.text.strip()
-    if len(pwd) < 3: return await message.answer("Пароль слишком короткий!")
+    if len(pwd) < 3: return await message.answer("Слишком короткий пароль!")
     await state.update_data(password=hash_password(pwd))
     data = await state.get_data()
     if data.get("is_admin"):
@@ -156,13 +155,14 @@ async def reg_pass(message: Message, state: FSMContext):
 @dp.message(Reg.waiting_secret)
 async def reg_secret(message: Message, state: FSMContext):
     code = message.text.strip().upper()
+    data = await state.get_data()
     async with aiosqlite.connect("orders.db") as db:
         if code not in SECRET_CODES:
             return await message.answer("Неверный код! Попробуй снова:")
-        async with db.execute("SELECT code FROM used_codes WHERE code = ?", (code,)) as cursor:
+        async with db.execute("SELECT code FROM used_codes WHERE username = ? AND code = ?", (data['username'], code)) as cursor:
             if await cursor.fetchone():
-                return await message.answer("Этот код уже занят! Введи другой:")
-        await db.execute("INSERT INTO used_codes (code) VALUES (?)", (code,))
+                return await message.answer("Ты уже использовал этот код! Введи другой:")
+        await db.execute("INSERT INTO used_codes (username, code) VALUES (?, ?)", (data['username'], code))
         await db.commit()
     await save_user(message, state, is_admin=True)
 
@@ -174,7 +174,7 @@ async def save_user(message: Message, state: FSMContext, is_admin: bool):
                          (data['username'], data['fio'], data['password'], message.chat.id, int(is_admin), rec_code))
         await db.commit()
     role = "ОТВЕТСТВЕННОГО" if is_admin else "УЧЕНИКА"
-    await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Твой код восстановления:** `{rec_code}`\nСохрани его!", reply_markup=get_main_menu(is_admin=is_admin), parse_mode="Markdown")
+    await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Код восстановления:** `{rec_code}`", reply_markup=get_main_menu(is_admin=is_admin), parse_mode="Markdown")
     await state.clear()
 
 @dp.callback_query(F.data == "auth_start")
@@ -183,8 +183,8 @@ async def auth_start(call: CallbackQuery, state: FSMContext):
     async with aiosqlite.connect("orders.db") as db:
         async with db.execute("SELECT is_logged_in FROM users WHERE username = ?", (username,)) as cursor:
             res = await cursor.fetchone()
-            if not res: return await call.message.answer("Ты не зарегистрирован! Нажми /start.")
-            if res[0] == 1: return await call.message.answer("Этот аккаунт уже в сети с другого устройства!")
+            if not res: return await call.message.answer("Ты не зарегистрирован!")
+            if res[0] == 1: return await call.message.answer("Аккаунт уже в сети!")
     await state.update_data(username=username)
     await call.message.edit_text("Введи пароль:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤔 Забыл пароль", callback_data="forgot_pass")]]))
     await state.set_state(Auth.waiting_password)
@@ -254,44 +254,91 @@ async def profile(message: Message):
         if "Полдник" in meals: p += 1
     total = b + l + p
     rank_idx = min(total // 3, len(RANKS) - 1)
-    text = (f"👤 **Профиль**\n\n📛 ФИО: {fio}\n🔗 Твой Телеграм: {username}\n\n"
-            f"🍳 Завтраков: {b}\n🍲 Обедов: {l}\n🥐 Полдников: {p}\n\n"
-            f"🏅 Твое звание: **{RANKS[rank_idx]}**")
+    text = f"👤 **Профиль**\n\n📛 ФИО: {fio}\n🔗 {username}\n\n🍳 Завтраков: {b}\n🍲 Обедов: {l}\n🥐 Полдников: {p}\n\n🏅 Звание: **{RANKS[rank_idx]}**"
     await message.answer(text, parse_mode="Markdown")
+
+# ==== ПАНЕЛЬ ОТВЕТСТВЕННОГО ====
+def get_admin_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Актуальные заявки", callback_data="admin_current")],
+        [InlineKeyboardButton(text="📜 История (7 дней)", callback_data="admin_history")]
+    ])
 
 @dp.message(F.text == "📥 Панель ответственного")
 async def admin_panel(message: Message):
     async with aiosqlite.connect("orders.db") as db:
         async with db.execute("SELECT is_admin FROM users WHERE chat_id = ? AND is_logged_in = 1", (message.chat.id,)) as cursor:
             res = await cursor.fetchone()
-            if not res or res[0] == 0: return await message.answer("У тебя нет прав.")
-        async with db.execute("""
-            SELECT o.order_date, u.fio, o.meals FROM orders o JOIN users u ON o.username = u.username ORDER BY o.order_date ASC, o.id ASC
-        """) as cursor:
-            orders = await cursor.fetchall()
-    if not orders: return await message.answer("Заявок пока нет.")
-    text = "📥 **Все заявки на питание:**\n\n"
-    current_date = None
-    for o_date, fio, meals in orders:
-        if o_date != current_date:
-            text += f"📅 **{o_date}**\n"
-            current_date = o_date
-        text += f"👤 {fio}: {meals}\n"
-    text += "\n*(Нажми на кнопку ниже, чтобы удалить все старые заявки)*"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🗑 Очистить все заявки", callback_data="clear_orders")]])
-    await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+            if not res or res[0] == 0: return await message.answer("Нет прав.")
+    await message.answer("Выбери раздел:", reply_markup=get_admin_kb())
 
-@dp.callback_query(F.data == "clear_orders")
-async def clear_orders(call: CallbackQuery):
+@dp.callback_query(F.data == "admin_current")
+async def admin_current(call: CallbackQuery):
+    now = datetime.now(NORILSK_TZ).date()
+    tomorrow = now + timedelta(days=1)
     async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT is_admin FROM users WHERE chat_id = ?", (call.message.chat.id,)) as cursor:
-            res = await cursor.fetchone()
-            if not res or res[0] == 0: return await call.answer("Нет прав!")
-        await db.execute("DELETE FROM orders")
-        await db.commit()
-    await call.message.edit_text("🗑 Все заявки удалены!")
-    await call.answer()
+        async with db.execute("""
+            SELECT o.order_date, u.fio, u.username, o.meals FROM orders o 
+            JOIN users u ON o.username = u.username 
+            WHERE o.order_date >= ? ORDER BY o.order_date ASC, o.id ASC
+        """, (str(now),)) as cursor:
+            orders = await cursor.fetchall()
+    if not orders: return await call.message.edit_text("Актуальных заявок нет.", reply_markup=get_admin_kb())
+    text = "📅 **Актуальные заявки:**\n\n"
+    curr_date = None
+    for o_date, fio, uname, meals in orders:
+        if o_date != curr_date:
+            text += f"📌 **{o_date}**\n"
+            curr_date = o_date
+        text += f"👤 {fio} ({uname}): {meals}\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🗑 Очистить актуальные", callback_data="confirm_clear_curr")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+    ])
+    await call.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
 
+@dp.callback_query(F.data == "admin_history")
+async def admin_history(call: CallbackQuery):
+    week_ago = datetime.now(NORILSK_TZ).date() - timedelta(days=7)
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("""
+            SELECT o.order_date, u.fio, u.username, o.meals FROM orders o 
+            JOIN users u ON o.username = u.username 
+            WHERE o.order_date >= ? ORDER BY o.order_date DESC, o.id DESC
+        """, (str(week_ago),)) as cursor:
+            orders = await cursor.fetchall()
+    if not orders: return await call.message.edit_text("История пуста.", reply_markup=get_admin_kb())
+    text = "📜 **История за 7 дней:**\n\n"
+    curr_date = None
+    for o_date, fio, uname, meals in orders:
+        if o_date != curr_date:
+            text += f"📌 **{o_date}**\n"
+            curr_date = o_date
+        text += f"👤 {fio} ({uname}): {meals}\n"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
+    await call.message.edit_text(text, parse_mode="Markdown", reply_markup=kb)
+
+@dp.callback_query(F.data == "confirm_clear_curr")
+async def confirm_clear_curr(call: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚠️ ДА, ОЧИСТИТЬ", callback_data="do_clear_curr")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="admin_current")]
+    ])
+    await call.message.edit_text("Вы уверены, что хотите удалить ВСЕ актуальные заявки?", reply_markup=kb)
+
+@dp.callback_query(F.data == "do_clear_curr")
+async def do_clear_curr(call: CallbackQuery):
+    now = str(datetime.now(NORILSK_TZ).date())
+    async with aiosqlite.connect("orders.db") as db:
+        await db.execute("DELETE FROM orders WHERE order_date >= ?", (now,))
+        await db.commit()
+    await call.message.edit_text("🗑 Актуальные заявки удалены.", reply_markup=get_admin_kb())
+
+@dp.callback_query(F.data == "admin_back")
+async def admin_back(call: CallbackQuery):
+    await call.message.edit_text("Выбери раздел:", reply_markup=get_admin_kb())
+
+# ==== ЗАКАЗ ЕДЫ ====
 @dp.message(F.text == "🍽 Сделать заказ")
 async def new_order(message: Message, state: FSMContext):
     async with aiosqlite.connect("orders.db") as db:
@@ -311,12 +358,12 @@ async def new_order(message: Message, state: FSMContext):
 async def order_date(call: CallbackQuery, state: FSMContext):
     date_str = call.data.split("_", 1)[1]
     order_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-    if order_date.weekday() > 4: return await call.answer("На выходные заказы не принимаются!", show_alert=True)
+    if order_date.weekday() > 4: return await call.answer("На выходные не принимаем!", show_alert=True)
     async with aiosqlite.connect("orders.db") as db:
         async with db.execute("SELECT username FROM users WHERE chat_id = ?", (call.message.chat.id,)) as cursor:
             username = (await cursor.fetchone())[0]
         async with db.execute("SELECT id FROM orders WHERE username = ? AND order_date = ?", (username, date_str)) as cursor:
-            if await cursor.fetchone(): return await call.answer("Ты уже сделал заказ на эту дату!", show_alert=True)
+            if await cursor.fetchone(): return await call.answer("Ты уже заказал на эту дату!", show_alert=True)
     await state.update_data(date=date_str, meals=[], weekday=order_date.weekday())
     menu = MENU_DATA[order_date.weekday()]
     text = f"📅 **Меню на {date_str}:**\n\n🍳 **Завтрак:** {menu['Завтрак']}\n\n🍲 **Обед:** {menu['Обед']}\n\n🥐 **Полдник:** {menu['Полдник']}\n\nЧто будешь заказывать?"
@@ -355,7 +402,7 @@ async def confirm(call: CallbackQuery, state: FSMContext):
         async with db.execute("SELECT chat_id FROM users WHERE is_admin = 1") as cursor:
             admins = await cursor.fetchall()
     for (admin_id,) in admins:
-        try: await bot.send_message(admin_id, "🔔 **У вас новая заявка!** Проверьте в кнопке «Панель ответственного».", parse_mode="Markdown")
+        try: await bot.send_message(admin_id, "🔔 **У вас новая заявка!** Проверьте в панели.", parse_mode="Markdown")
         except: pass
     await call.message.edit_text("✅ Заявка отправлена!")
     await state.clear()
@@ -378,9 +425,22 @@ async def my_orders(message: Message):
     text = "📋 **Твои последние заказы:**\n\n" + "\n".join([f"📅 {d}: {m}" for d, m in orders])
     await message.answer(text, parse_mode="Markdown")
 
+# ==== ФОНОВАЯ ОЧИСТКА ПО ВОСКРЕСЕНЬЯМ ====
+async def weekly_cleanup():
+    while True:
+        now = datetime.now(NORILSK_TZ)
+        # Если сегодня воскресенье и время 00:00 - 00:05
+        if now.weekday() == 6 and now.hour == 0 and now.minute < 5:
+            async with aiosqlite.connect("orders.db") as db:
+                await db.execute("DELETE FROM orders WHERE order_date < ?", (str(now.date()),))
+                await db.commit()
+            await asyncio.sleep(3600) # Спим час, чтобы не запустить дважды
+        await asyncio.sleep(60) # Проверяем каждую минуту
+
 async def main():
     await init_db()
     Thread(target=run_flask, daemon=True).start()
+    asyncio.create_task(weekly_cleanup()) # Запускаем фоновую очистку
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
