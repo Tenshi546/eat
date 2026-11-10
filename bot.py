@@ -883,3 +883,24 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+                return
+
+async def weekly_cleanup():
+    while True:
+        now = datetime.now(NORILSK_TZ)
+        if now.weekday() == 6 and now.hour == 0 and now.minute < 5:
+            async with aiosqlite.connect("orders.db") as db:
+                await db.execute("DELETE FROM orders WHERE order_date < ?", (str(now.date()),))
+                await db.execute("DELETE FROM duty WHERE date < ?", (str(now.date()),))
+                await db.commit()
+            await asyncio.sleep(3600)
+        await asyncio.sleep(60)
+
+async def main():
+    await init_db()
+    Thread(target=run_flask, daemon=True).start()
+    asyncio.create_task(weekly_cleanup())
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
