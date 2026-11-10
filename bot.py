@@ -100,7 +100,6 @@ def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 async def init_db():
-    # Принудительное удаление старой базы, чтобы бот запустился без конфликтов
     if os.path.exists("orders.db"):
         try: os.remove("orders.db")
         except: pass
@@ -405,7 +404,7 @@ async def help_menu(message: Message):
             help_text = (await cursor.fetchone())[0]
     await message.answer(f"🆘 **Помощь**\n\n{help_text}", parse_mode="Markdown")
 
-# ==== АДМИН ПАНЕЛЬ (ДОСТУПНА ВСЕМ ПО КОМАНДЕ) ====
+# ==== АДМИН ПАНЕЛЬ ====
 @dp.message(Command(ADMIN_COMMAND))
 async def admin_command(message: Message, state: FSMContext):
     text = (
@@ -529,7 +528,7 @@ async def admin_save_menu(message: Message, state: FSMContext):
     await message.answer("✅ Меню обновлено!", reply_markup=await get_main_menu(message.chat.id))
     await state.clear()
 
-# ==== УПРАВЛЕНИЕ КНОПКАМИ ====
+# ==== УПРАВЛЕНИЕ КНОПКАМИ (ИСПРАВЛЕНО) ====
 @dp.callback_query(F.data.startswith("admin_manage_btns"))
 async def admin_manage_btns(call: CallbackQuery):
     parent_id = int(call.data.split("_")[3]) if "_" in call.data else 0
@@ -538,7 +537,8 @@ async def admin_manage_btns(call: CallbackQuery):
         [InlineKeyboardButton(text="📝 Изменить/Удалить", callback_data=f"btn_edit_list_{parent_id}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
     ]
-    await call.message.edit_text("Управление кнопками:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await call.message.answer("Управление кнопками:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await call.answer()
 
 @dp.callback_query(F.data.startswith("btn_add_"))
 async def btn_add_start(call: CallbackQuery, state: FSMContext):
