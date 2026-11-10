@@ -100,6 +100,11 @@ def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 async def init_db():
+    # Принудительное удаление старой базы, чтобы бот запустился без конфликтов
+    if os.path.exists("orders.db"):
+        try: os.remove("orders.db")
+        except: pass
+
     async with aiosqlite.connect("orders.db") as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -191,7 +196,7 @@ def get_meal_kb(selected):
     kb.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# ==== РЕГИСТРАЦИЯ ====
+# ==== РЕГИСТРАЦИЯ И ВХОД ====
 @dp.callback_query(F.data == "reg_start")
 async def reg_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
@@ -238,11 +243,9 @@ async def reg_secret(message: Message, state: FSMContext):
     code = message.text.strip().upper()
     data = await state.get_data()
     async with aiosqlite.connect("orders.db") as db:
-        if code not in SECRET_CODES:
-            return await message.answer("Неверный код! Попробуй снова:")
+        if code not in SECRET_CODES: return await message.answer("Неверный код! Попробуй снова:")
         async with db.execute("SELECT code FROM used_codes WHERE username = ? AND code = ?", (data['username'], code)) as cursor:
-            if await cursor.fetchone():
-                return await message.answer("Ты уже использовал этот код!")
+            if await cursor.fetchone(): return await message.answer("Ты уже использовал этот код!")
         await db.execute("INSERT INTO used_codes (username, code) VALUES (?, ?)", (data['username'], code))
         await db.commit()
     await save_user(message, state, is_admin=True)
@@ -258,7 +261,6 @@ async def save_user(message: Message, state: FSMContext, is_admin: bool):
     await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Код восстановления:** `{rec_code}`", reply_markup=await get_main_menu(message.chat.id), parse_mode="Markdown")
     await state.clear()
 
-# ==== ВХОД ====
 @dp.callback_query(F.data == "auth_start")
 async def auth_start(call: CallbackQuery, state: FSMContext):
     username = f"@{call.from_user.username}"
@@ -320,7 +322,22 @@ async def logout(message: Message, state: FSMContext):
     await message.answer("Вы вышли из аккаунта.", reply_markup=get_start_kb())
     await state.clear()
 
-# ==== ПРОФИЛЬ И ЛИДЕРЫ ====
+@dp.message(CommandStart())
+async def start(message: Message, state: FSMContext):
+    await state.clear()
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT is_logged_in FROM users WHERE username = ?", (f"@{message.from_user.username}",)) as cursor:
+            res = await cursor.fetchone()
+            if res and res[0] == 1:
+                return await message.answer("Ты уже в системе.", reply_markup=await get_main_menu(message.chat.id))
+    await message.answer("Привет! Выбери действие:", reply_markup=get_start_kb())
+
+@dp.message(F.text == "🔙 Назад")
+async def go_back(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Главное меню:", reply_markup=await get_main_menu(message.chat.id))
+
+# ==== ПРОФИЛЬ, ЛИДЕРЫ, ПОМОЩЬ ====
 @dp.message(F.text == "👤 Профиль")
 async def profile(message: Message):
     async with aiosqlite.connect("orders.db") as db:
@@ -843,9 +860,13 @@ async def my_orders(message: Message):
     text = "📋 **Твои последние заказы:**\n\n" + "\n".join([f"📅 {d}: {m}" for d, m in orders])
     await message.answer(text, parse_mode="Markdown")
 
-# ==== ОБРАБОТЧИК КАСТОМНЫХ КНОПОК (В САМОМ КОНЦЕ) ====
-@dp.message(F.text)
+# ==== ОБРАБОТЧИК КАСТОМНЫХ КНОПОК ====
+@dp.message(F.text, ~F.text.startswith("/"))
 async def handle_custom_buttons(message: Message):
+    # Игнорируем системные кнопки, чтобы не было конфликтов
+    if message.text in ["🍽 Сделать заказ", "📋 Мои заказы", "👤 Профиль", "🏆 Лидеры", "🆘 Помощь", "🚪 Выйти", "📥 Панель ответственного"]:
+        return
+
     async with aiosqlite.connect("orders.db") as db:
         async with db.execute("SELECT id, text, photo_id FROM custom_buttons WHERE title = ? AND parent_id = 0", (message.text,)) as cursor:
             btn = await cursor.fetchone()
