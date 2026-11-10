@@ -18,6 +18,28 @@ BOT_TOKEN = "9259003904:AAGO259i8dQHPKln3PQbzDaj0iwkTAHTdt4"
 NORILSK_TZ = timezone(timedelta(hours=7))
 SECRET_CODES = ["ADMIN77", "BOSS999", "CHEF555", "GURU123"]
 
+# Официальный список учеников (Фамилия Имя Отчество)
+STUDENTS = [
+    "Агаев Элим Висалович", "Бабаян Каролина Гамлетовна", "Бадалова Чахлик Халил кызы",
+    "Баронина Анастасия Олеговна", "Березина Алина Сергеевна", "Бочарова Ксения Максимовна",
+    "Григорьева Полина Сергеевна", "Денисенков Арсений Антонович", "Елизарьева Лукерия АЛЕКС",
+    "Ерастова Елизавета СЕРГ", "Еремичева Александра Евген", "Ишкильдин Камил Денисович",
+    "Кондрачук Александра Ден", "Кызычакова Дарья Алексе", "Магомедова Аида Рагимовна",
+    "Мельникова Полина Алекса", "Овечкина Мария Александ", "Орманжи Вадим",
+    "Папко Захар Сергеевич", "Савчук Камила Игоревна", "Самошкина Арина Алекс",
+    "Сеничева Алена Дмитриевна", "Солдатченкова Майя Владис", "Станкова Ксения Юрьевна",
+    "Степанюк Софья Алексан", "Сюксяева Дарина Андреевна", "ТАУШЕВ САДАМ КРЫМ",
+    "Хубежов Ларсан Михайлович", "Юдина Софья Игоревна", "Ягелло Анжела Игоревна"
+]
+
+# Создаем базу "правильных" имен и фамилий для быстрой проверки
+# Берем только первое и второе слово (Фамилия и Имя)
+VALID_NAMES = set()
+for student in STUDENTS:
+    parts = student.split()
+    if len(parts) >= 2:
+        VALID_NAMES.add((parts[0].lower(), parts[1].lower()))
+
 MENU_DATA = {
     0: {"Завтрак": "Каша молочная, сыр, чай, хлеб", "Обед": "Салат, борщ, говядина, тефтели, гречка, компот", "Полдник": "Печенье, компот, чай"},
     1: {"Завтрак": "Горошек, тефтели рыбные, пюре, чай, апельсин", "Обед": "Салат морковный, рассольник, птица отварная и жареная, макароны, компот", "Полдник": "Булочка, кофейный напиток"},
@@ -99,6 +121,9 @@ def get_main_menu(is_admin=False):
         kb.insert(1, [KeyboardButton(text="📥 Панель ответственного")])
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
+def get_cancel_kb():
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 Назад")]], resize_keyboard=True)
+
 def get_meal_kb(selected):
     kb = []
     for meal in ["Завтрак", "Обед", "Полдник"]:
@@ -107,6 +132,17 @@ def get_meal_kb(selected):
     if selected: kb.append([InlineKeyboardButton(text="➡️ Продолжить", callback_data="proceed")])
     kb.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
+
+# ==== ОБРАБОТКА НАЗАД ====
+@dp.message(F.text == "🔙 Назад")
+async def go_back(message: Message, state: FSMContext):
+    await state.clear()
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT is_logged_in, is_admin FROM users WHERE username = ?", (f"@{message.from_user.username}",)) as cursor:
+            res = await cursor.fetchone()
+            if res and res[0] == 1:
+                return await message.answer("Главное меню:", reply_markup=get_main_menu(is_admin=bool(res[1])))
+    await message.answer("Привет! Выбери действие:", reply_markup=get_start_kb())
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
@@ -118,12 +154,13 @@ async def start(message: Message, state: FSMContext):
                 return await message.answer("Ты уже в системе.", reply_markup=get_main_menu(is_admin=bool(res[1])))
     await message.answer("Привет! Выбери действие:", reply_markup=get_start_kb())
 
+# ==== РЕГИСТРАЦИЯ ====
 @dp.callback_query(F.data == "reg_start")
 async def reg_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
     if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
     await state.update_data(username=f"@{username}", is_admin=False)
-    await call.message.edit_text("Введи свои ФИО русскими буквами:")
+    await call.message.edit_text("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_fio)
 
 @dp.callback_query(F.data == "reg_admin")
@@ -131,12 +168,23 @@ async def reg_admin_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
     if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
     await state.update_data(username=f"@{username}", is_admin=True)
-    await call.message.edit_text("Введи свои ФИО русскими буквами:")
+    await call.message.edit_text("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_fio)
 
 @dp.message(Reg.waiting_fio)
 async def reg_fio(message: Message, state: FSMContext):
-    await state.update_data(fio=message.text.strip().upper())
+    text = message.text.strip()
+    parts = text.split()
+    
+    # Проверка ФИО
+    if len(parts) < 2:
+        return await message.answer("Ошибка! Введи хотя бы Фамилию и Имя. Попробуй еще раз:")
+    
+    fam, name = parts[0].lower(), parts[1].lower()
+    if (fam, name) not in VALID_NAMES:
+        return await message.answer("Ошибка! Такого ученика нет в списке (или есть опечатка). Проверь Фамилию и Имя и напиши снова:")
+
+    await state.update_data(fio=text.upper())
     await message.answer("Придумай пароль:")
     await state.set_state(Reg.waiting_password)
 
@@ -161,7 +209,7 @@ async def reg_secret(message: Message, state: FSMContext):
             return await message.answer("Неверный код! Попробуй снова:")
         async with db.execute("SELECT code FROM used_codes WHERE username = ? AND code = ?", (data['username'], code)) as cursor:
             if await cursor.fetchone():
-                return await message.answer("Ты уже использовал этот код! Введи другой:")
+                return await message.answer("Ты уже использовал этот код!")
         await db.execute("INSERT INTO used_codes (username, code) VALUES (?, ?)", (data['username'], code))
         await db.commit()
     await save_user(message, state, is_admin=True)
@@ -177,6 +225,7 @@ async def save_user(message: Message, state: FSMContext, is_admin: bool):
     await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Код восстановления:** `{rec_code}`", reply_markup=get_main_menu(is_admin=is_admin), parse_mode="Markdown")
     await state.clear()
 
+# ==== ВХОД ====
 @dp.callback_query(F.data == "auth_start")
 async def auth_start(call: CallbackQuery, state: FSMContext):
     username = f"@{call.from_user.username}"
@@ -191,7 +240,7 @@ async def auth_start(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "forgot_pass")
 async def forgot_pass(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text("Введи свой код восстановления:")
+    await call.message.edit_text("Введи свой код восстановления:", reply_markup=get_cancel_kb())
     await state.set_state(Recovery.waiting_code)
 
 @dp.message(Auth.waiting_password)
@@ -275,7 +324,6 @@ async def admin_panel(message: Message):
 @dp.callback_query(F.data == "admin_current")
 async def admin_current(call: CallbackQuery):
     now = datetime.now(NORILSK_TZ).date()
-    tomorrow = now + timedelta(days=1)
     async with aiosqlite.connect("orders.db") as db:
         async with db.execute("""
             SELECT o.order_date, u.fio, u.username, o.meals FROM orders o 
@@ -425,22 +473,21 @@ async def my_orders(message: Message):
     text = "📋 **Твои последние заказы:**\n\n" + "\n".join([f"📅 {d}: {m}" for d, m in orders])
     await message.answer(text, parse_mode="Markdown")
 
-# ==== ФОНОВАЯ ОЧИСТКА ПО ВОСКРЕСЕНЬЯМ ====
+# ==== ФОНОВАЯ ОЧИСТКА ====
 async def weekly_cleanup():
     while True:
         now = datetime.now(NORILSK_TZ)
-        # Если сегодня воскресенье и время 00:00 - 00:05
         if now.weekday() == 6 and now.hour == 0 and now.minute < 5:
             async with aiosqlite.connect("orders.db") as db:
                 await db.execute("DELETE FROM orders WHERE order_date < ?", (str(now.date()),))
                 await db.commit()
-            await asyncio.sleep(3600) # Спим час, чтобы не запустить дважды
-        await asyncio.sleep(60) # Проверяем каждую минуту
+            await asyncio.sleep(3600)
+        await asyncio.sleep(60)
 
 async def main():
     await init_db()
     Thread(target=run_flask, daemon=True).start()
-    asyncio.create_task(weekly_cleanup()) # Запускаем фоновую очистку
+    asyncio.create_task(weekly_cleanup())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
