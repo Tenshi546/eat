@@ -2,8 +2,6 @@ import asyncio
 import os
 import aiosqlite
 import hashlib
-import random
-import string
 from datetime import datetime, timedelta, timezone, date
 from flask import Flask
 from threading import Thread
@@ -17,7 +15,6 @@ from aiogram.fsm.state import State, StatesGroup
 BOT_TOKEN = "9259003904:AAGO259i8dQHPKln3PQbzDaj0iwkTAHTdt4"
 NORILSK_TZ = timezone(timedelta(hours=7))
 SECRET_CODES = ["ADMIN77", "BOSS999", "CHEF555", "GURU123"]
-OWNER = "@wertowoi"
 ADMIN_COMMAND = "flvadminpanelArseniy011289serch"
 
 STUDENTS = [
@@ -39,12 +36,13 @@ for student in STUDENTS:
     if len(parts) >= 2:
         VALID_NAMES.add((parts[0].lower(), parts[1].lower()))
 
+# Пустое меню по умолчанию (настраивается через админку)
 DEFAULT_MENU = {
-    "0": {"Завтрак": "Каша молочная, сыр, чай, хлеб", "Обед": "Салат, борщ, говядина, тефтели, гречка, компот", "Полдник": "Печенье, компот, чай"},
-    "1": {"Завтрак": "Горошек, тефтели рыбные, пюре, чай, апельсин", "Обед": "Салат морковный, рассольник, птица отварная и жареная, макароны, компот", "Полдник": "Булочка, кофейный напиток"},
-    "2": {"Завтрак": "Фрикадельки, овощи, чай с лимоном, пюре фруктовое", "Обед": "Салат из свеклы, суп крестьянский, говядина, рыба запеченная, компот", "Полдник": "Пирожки, молоко"},
-    "3": {"Завтрак": "Каша молочная, сыр, чай, хлеб", "Обед": "Салат, борщ, говядина, тефтели, гречка, компот", "Полдник": "Печенье, компот, чай"},
-    "4": {"Завтрак": "Горошек, тефтели рыбные, пюре, чай, апельсин", "Обед": "Салат морковный, рассольник, птица отварная и жареная, макароны, компот", "Полдник": "Булочка, кофейный напиток"}
+    "0": {"Завтрак": "Не настроено", "Обед": "Не настроено", "Полдник": "Не настроено"},
+    "1": {"Завтрак": "Не настроено", "Обед": "Не настроено", "Полдник": "Не настроено"},
+    "2": {"Завтрак": "Не настроено", "Обед": "Не настроено", "Полдник": "Не настроено"},
+    "3": {"Завтрак": "Не настроено", "Обед": "Не настроено", "Полдник": "Не настроено"},
+    "4": {"Завтрак": "Не настроено", "Обед": "Не настроено", "Полдник": "Не настроено"}
 }
 
 RANKS_DATA = [
@@ -61,14 +59,11 @@ class Reg(StatesGroup):
     waiting_secret = State()
 
 class Auth(StatesGroup):
+    waiting_fio = State()
     waiting_password = State()
 
 class Logout(StatesGroup):
     waiting_confirm = State()
-
-class Recovery(StatesGroup):
-    waiting_code = State()
-    waiting_new_password = State()
 
 class Order(StatesGroup):
     choosing_date = State()
@@ -104,7 +99,7 @@ def run_flask():
 
 async def init_db():
     # ВНИМАНИЕ: Эта строка удаляет базу при каждом перезапуске, чтобы почистить ошибки. 
-    # Позже, когда все заработает, её можно будет удалить, чтобы заказы сохранялись!
+    # Когда убедишься, что всё работает, удали эти две строки, чтобы заказы сохранялись!
     if os.path.exists("orders.db"):
         try: os.remove("orders.db")
         except: pass
@@ -113,7 +108,7 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY, fio TEXT, password TEXT, chat_id INTEGER, is_logged_in INTEGER DEFAULT 0, 
-                is_admin INTEGER DEFAULT 0, recovery_code TEXT, is_banned INTEGER DEFAULT 0
+                is_admin INTEGER DEFAULT 0, is_banned INTEGER DEFAULT 0
             )
         """)
         await db.execute("""
@@ -154,10 +149,6 @@ async def init_db():
 
 def hash_password(password: str):
     return hashlib.sha256(password.encode()).hexdigest()
-
-def gen_recovery_code():
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(chars) for _ in range(random.randint(6, 10)))
 
 def get_start_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -215,7 +206,7 @@ async def go_back(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Главное меню:", reply_markup=await get_main_menu(message.chat.id))
 
-# ==== РЕГИСТРАЦИЯ И ВХОД ====
+# ==== РЕГИСТРАЦИЯ ====
 @dp.callback_query(F.data == "reg_start")
 async def reg_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
@@ -290,77 +281,61 @@ async def reg_secret(message: Message, state: FSMContext):
 
 async def save_user(message: Message, state: FSMContext, is_admin: bool):
     data = await state.get_data()
-    rec_code = gen_recovery_code()
     async with aiosqlite.connect("orders.db") as db:
-        await db.execute("INSERT OR REPLACE INTO users (username, fio, password, chat_id, is_logged_in, is_admin, recovery_code) VALUES (?, ?, ?, ?, 1, ?, ?)",
-                         (data['username'], data['fio'], data['password'], message.chat.id, int(is_admin), rec_code))
+        await db.execute("INSERT OR REPLACE INTO users (username, fio, password, chat_id, is_logged_in, is_admin) VALUES (?, ?, ?, ?, 1, ?)",
+                         (data['username'], data['fio'], data['password'], message.chat.id, int(is_admin)))
         await db.commit()
     role = "ОТВЕТСТВЕННОГО" if is_admin else "УЧЕНИКА"
-    await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Код восстановления:** `{rec_code}`\nСохраните его! Он понадобится для сброса пароля.", reply_markup=await get_main_menu(message.chat.id), parse_mode="Markdown")
+    await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}", reply_markup=await get_main_menu(message.chat.id))
     await state.clear()
 
+# ==== ВХОД ====
 @dp.callback_query(F.data == "auth_start")
 async def auth_start(call: CallbackQuery, state: FSMContext):
-    username = f"@{call.from_user.username}"
-    async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT is_logged_in FROM users WHERE username = ?", (username,)) as cursor:
-            res = await cursor.fetchone()
-            if not res: return await call.message.answer("Ты не зарегистрирован!")
-            if res[0] == 1: return await call.message.answer("Аккаунт уже в сети!")
-    await state.update_data(username=username)
-    await call.message.edit_text("Введи пароль:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤔 Забыл пароль", callback_data="forgot_pass")]]))
-    await state.set_state(Auth.waiting_password)
+    await call.message.answer("Введи свои ФИО (Фамилия Имя):", reply_markup=get_cancel_kb())
+    await state.set_state(Auth.waiting_fio)
 
-@dp.callback_query(F.data == "forgot_pass")
-async def forgot_pass(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text("Введи свой код восстановления:", reply_markup=get_cancel_kb())
-    await state.set_state(Recovery.waiting_code)
+@dp.message(Auth.waiting_fio)
+async def auth_fio(message: Message, state: FSMContext):
+    text = message.text.strip()
+    parts = text.split()
+    if len(parts) < 2: return await message.answer("Введи Фамилию и Имя:")
+    
+    fam, name = parts[0].lower(), parts[1].lower()
+    if (fam, name) not in VALID_NAMES:
+        return await message.answer("Такого ученика нет в списке. Проверь и напиши снова:")
+        
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT username FROM users WHERE fio = ?", (text.upper(),)) as cursor:
+            res = await cursor.fetchone()
+            if not res: return await message.answer("Это ФИО не зарегистрировано! Нажми «Назад» и зарегистрируйся.")
+            if res[0] != f"@{message.from_user.username}":
+                return await message.answer("Это ФИО привязано к другому Telegram-аккаунту!")
+                
+    await state.update_data(fio=text.upper())
+    await message.answer("Введи пароль:", reply_markup=get_cancel_kb())
+    await state.set_state(Auth.waiting_password)
 
 @dp.message(Auth.waiting_password)
 async def auth_pass(message: Message, state: FSMContext):
     pwd = message.text.strip()
     data = await state.get_data()
     async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT password, is_admin FROM users WHERE username = ?", (data['username'],)) as cursor:
+        async with db.execute("SELECT password, is_admin FROM users WHERE fio = ?", (data['fio'],)) as cursor:
             res = await cursor.fetchone()
             if res and res[0] == hash_password(pwd):
-                await db.execute("UPDATE users SET chat_id = ?, is_logged_in = 1 WHERE username = ?", (message.chat.id, data['username']))
+                await db.execute("UPDATE users SET chat_id = ?, is_logged_in = 1 WHERE fio = ?", (message.chat.id, data['fio']))
                 await db.commit()
                 await message.answer("Успешный вход!", reply_markup=await get_main_menu(message.chat.id))
                 await state.clear()
             else:
                 await message.answer("Неверный пароль!")
 
-@dp.message(Recovery.waiting_code)
-async def rec_code(message: Message, state: FSMContext):
-    code = message.text.strip().upper()
-    data = await state.get_data()
-    async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT username FROM users WHERE username = ? AND recovery_code = ?", (data['username'], code)) as cursor:
-            if not await cursor.fetchone(): return await message.answer("Неверный код!")
-    await message.answer("Код верный! Придумай новый пароль:", reply_markup=get_cancel_kb())
-    await state.set_state(Recovery.waiting_new_password)
-
-@dp.message(Recovery.waiting_new_password)
-async def rec_new_pass(message: Message, state: FSMContext):
-    pwd = message.text.strip()
-    if len(pwd) < 3: return await message.answer("Слишком короткий пароль!")
-    data = await state.get_data()
-    async with aiosqlite.connect("orders.db") as db:
-        await db.execute("UPDATE users SET password = ? WHERE username = ?", (hash_password(pwd), data['username']))
-        await db.commit()
-    await message.answer("✅ Пароль изменен! Теперь можешь войти.", reply_markup=get_start_kb())
-    await state.clear()
-
+# ==== ВЫХОД ====
 @dp.message(F.text == "🚪 Выйти")
 async def logout(message: Message, state: FSMContext):
-    async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT recovery_code FROM users WHERE chat_id = ? AND is_logged_in = 1", (message.chat.id,)) as cursor:
-            res = await cursor.fetchone()
-            if not res: return await message.answer("Ты не в аккаунте.", reply_markup=get_start_kb())
-            
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Да, выйти"), KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
-    await message.answer(f"Подтвердите выход из аккаунта.\n\n⚠️ **Ваш код восстановления:** `{res[0]}`\n(Сохраните его, чтобы потом сбросить пароль).", reply_markup=kb, parse_mode="Markdown")
+    await message.answer("Подтвердите выход из аккаунта.", reply_markup=kb)
     await state.set_state(Logout.waiting_confirm)
 
 @dp.message(Logout.waiting_confirm)
@@ -375,7 +350,7 @@ async def confirm_logout(message: Message, state: FSMContext):
         await message.answer("Вы вышли из аккаунта.", reply_markup=get_start_kb())
         await state.clear()
     else:
-        await message.answer("Пожалуйста, выбери Да или Отмена с помощью кнопок.")
+        await message.answer("Выбери Да или Отмена.")
 
 # ==== ПРОФИЛЬ, ЛИДЕРЫ, ПОМОЩЬ ====
 @dp.message(F.text == "👤 Профиль")
@@ -450,7 +425,6 @@ async def help_menu(message: Message):
 async def admin_command(message: Message, state: FSMContext):
     text = (
         "👑 **Добро пожаловать в супер-админку!**\n\n"
-        "Тут ты можешь управлять всем ботом, не трогая код.\n\n"
         "🛠 **Возможности:**\n"
         "1. **Меню**: Меняй текст еды на любой день.\n"
         "2. **Кнопки**: Создавай новые кнопки с текстом и фото.\n"
