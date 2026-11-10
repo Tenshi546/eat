@@ -17,8 +17,8 @@ from aiogram.fsm.state import State, StatesGroup
 BOT_TOKEN = "9259003904:AAGO259i8dQHPKln3PQbzDaj0iwkTAHTdt4"
 NORILSK_TZ = timezone(timedelta(hours=7))
 SECRET_CODES = ["ADMIN77", "BOSS999", "CHEF555", "GURU123"]
+OWNER = "@wertowoi"
 
-# Официальный список учеников (Фамилия Имя Отчество)
 STUDENTS = [
     "Агаев Элим Висалович", "Бабаян Каролина Гамлетовна", "Бадалова Чахлик Халил кызы",
     "Баронина Анастасия Олеговна", "Березина Алина Сергеевна", "Бочарова Ксения Максимовна",
@@ -32,8 +32,6 @@ STUDENTS = [
     "Хубежов Ларсан Михайлович", "Юдина Софья Игоревна", "Ягелло Анжела Игоревна"
 ]
 
-# Создаем базу "правильных" имен и фамилий для быстрой проверки
-# Берем только первое и второе слово (Фамилия и Имя)
 VALID_NAMES = set()
 for student in STUDENTS:
     parts = student.split()
@@ -73,6 +71,9 @@ class Order(StatesGroup):
     choosing_meal = State()
     confirming = State()
 
+class AdminDuty(StatesGroup):
+    waiting_confirm = State()
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -96,6 +97,11 @@ async def init_db():
             )
         """)
         await db.execute("CREATE TABLE IF NOT EXISTS used_codes (username TEXT, code TEXT)")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS duty (
+                date TEXT PRIMARY KEY, fio TEXT, username TEXT
+            )
+        """)
         await db.commit()
 
 def hash_password(password: str):
@@ -115,7 +121,8 @@ def get_start_kb():
 def get_main_menu(is_admin=False):
     kb = [
         [KeyboardButton(text="🍽 Сделать заказ"), KeyboardButton(text="📋 Мои заказы")],
-        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🚪 Выйти")]
+        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🆘 Помощь")],
+        [KeyboardButton(text="🚪 Выйти")]
     ]
     if is_admin:
         kb.insert(1, [KeyboardButton(text="📥 Панель ответственного")])
@@ -133,7 +140,6 @@ def get_meal_kb(selected):
     kb.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
-# ==== ОБРАБОТКА НАЗАД ====
 @dp.message(F.text == "🔙 Назад")
 async def go_back(message: Message, state: FSMContext):
     await state.clear()
@@ -175,17 +181,13 @@ async def reg_admin_start(call: CallbackQuery, state: FSMContext):
 async def reg_fio(message: Message, state: FSMContext):
     text = message.text.strip()
     parts = text.split()
-    
-    # Проверка ФИО
     if len(parts) < 2:
         return await message.answer("Ошибка! Введи хотя бы Фамилию и Имя. Попробуй еще раз:")
-    
     fam, name = parts[0].lower(), parts[1].lower()
     if (fam, name) not in VALID_NAMES:
-        return await message.answer("Ошибка! Такого ученика нет в списке (или есть опечатка). Проверь Фамилию и Имя и напиши снова:")
-
+        return await message.answer("Ошибка! Такого ученика нет в списке (или опечатка). Проверь Фамилию и Имя и напиши снова:")
     await state.update_data(fio=text.upper())
-    await message.answer("Придумай пароль:")
+    await message.answer("Придумай пароль:", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_password)
 
 @dp.message(Reg.waiting_password)
@@ -195,7 +197,7 @@ async def reg_pass(message: Message, state: FSMContext):
     await state.update_data(password=hash_password(pwd))
     data = await state.get_data()
     if data.get("is_admin"):
-        await message.answer("Введи секретный код ответственного:")
+        await message.answer("Введи секретный код ответственного:", reply_markup=get_cancel_kb())
         await state.set_state(Reg.waiting_secret)
     else:
         await save_user(message, state, is_admin=False)
@@ -265,7 +267,7 @@ async def rec_code(message: Message, state: FSMContext):
     async with aiosqlite.connect("orders.db") as db:
         async with db.execute("SELECT username FROM users WHERE username = ? AND recovery_code = ?", (data['username'], code)) as cursor:
             if not await cursor.fetchone(): return await message.answer("Неверный код!")
-    await message.answer("Код верный! Придумай новый пароль:")
+    await message.answer("Код верный! Придумай новый пароль:", reply_markup=get_cancel_kb())
     await state.set_state(Recovery.waiting_new_password)
 
 @dp.message(Recovery.waiting_new_password)
@@ -306,19 +308,79 @@ async def profile(message: Message):
     text = f"👤 **Профиль**\n\n📛 ФИО: {fio}\n🔗 {username}\n\n🍳 Завтраков: {b}\n🍲 Обедов: {l}\n🥐 Полдников: {p}\n\n🏅 Звание: **{RANKS[rank_idx]}**"
     await message.answer(text, parse_mode="Markdown")
 
+@dp.message(F.text == "🆘 Помощь")
+async def help_menu(message: Message):
+    async with aiosqlite.connect("orders.db") as db:
+        # Получаем список всех ответственных
+        async with db.execute("SELECT username, fio FROM users WHERE is_admin = 1") as cursor:
+            admins = await cursor.fetchall()
+        
+        # Узнаем, кто сегодня дежурит
+        today = str(datetime.now(NORILSK_TZ).date())
+        async with db.execute("SELECT fio FROM duty WHERE date = ?", (today,)) as cursor:
+            duty = await cursor.fetchone()
+
+    text = f"🆘 **Помощь**\n\n👑 Владелец бота: {OWNER}\n\n🛡 **Ответственные по питанию:**\n"
+    if admins:
+        for uname, fio in admins:
+            text += f"• {fio} ({uname})\n"
+    else:
+        text += "• Пока нет зарегистрированных ответственных.\n"
+        
+    text += "\n"
+    if duty:
+        text += f"📢 **Ответственный сегодня:**\n👤 {duty[0]}\n"
+    else:
+        text += f"📢 **Ответственный сегодня:**\n👤 Пока не назначен\n"
+
+    await message.answer(text, parse_mode="Markdown")
+
 # ==== ПАНЕЛЬ ОТВЕТСТВЕННОГО ====
+@dp.message(F.text == "📥 Панель ответственного")
+async def admin_panel(message: Message, state: FSMContext):
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT is_admin FROM users WHERE chat_id = ? AND is_logged_in = 1", (message.chat.id,)) as cursor:
+            res = await cursor.fetchone()
+            if not res or res[0] == 0: return await message.answer("Нет прав.")
+            
+    kb = ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="✅ Да"), KeyboardButton(text="❌ Нет")],
+        [KeyboardButton(text="🔙 Назад")]
+    ], resize_keyboard=True)
+    
+    await message.answer("Вы сегодня занимаетесь питанием?", reply_markup=kb)
+    await state.set_state(AdminDuty.waiting_confirm)
+
+@dp.message(AdminDuty.waiting_confirm)
+async def admin_duty_confirm(message: Message, state: FSMContext):
+    if message.text == "🔙 Назад":
+        await state.clear()
+        return await start(message, state)
+        
+    if message.text == "✅ Да":
+        async with aiosqlite.connect("orders.db") as db:
+            async with db.execute("SELECT fio, username FROM users WHERE chat_id = ?", (message.chat.id,)) as cursor:
+                fio, uname = await cursor.fetchone()
+            today = str(datetime.now(NORILSK_TZ).date())
+            await db.execute("INSERT OR REPLACE INTO duty (date, fio, username) VALUES (?, ?, ?)", (today, fio, uname))
+            await db.commit()
+        await message.answer("Отлично! Вы назначены дежурным на сегодня.", reply_markup=get_main_menu(is_admin=True))
+    elif message.text == "❌ Нет":
+        await message.answer("Понял, вы не дежурите.", reply_markup=get_main_menu(is_admin=True))
+    else:
+        return await message.answer("Пожалуйста, выбери Да или Нет с помощью кнопок.")
+        
+    await state.clear()
+    # После ответа показываем саму панель
+    await show_admin_menu(message)
+
 def get_admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 Актуальные заявки", callback_data="admin_current")],
         [InlineKeyboardButton(text="📜 История (7 дней)", callback_data="admin_history")]
     ])
 
-@dp.message(F.text == "📥 Панель ответственного")
-async def admin_panel(message: Message):
-    async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT is_admin FROM users WHERE chat_id = ? AND is_logged_in = 1", (message.chat.id,)) as cursor:
-            res = await cursor.fetchone()
-            if not res or res[0] == 0: return await message.answer("Нет прав.")
+async def show_admin_menu(message: Message):
     await message.answer("Выбери раздел:", reply_markup=get_admin_kb())
 
 @dp.callback_query(F.data == "admin_current")
@@ -473,13 +535,13 @@ async def my_orders(message: Message):
     text = "📋 **Твои последние заказы:**\n\n" + "\n".join([f"📅 {d}: {m}" for d, m in orders])
     await message.answer(text, parse_mode="Markdown")
 
-# ==== ФОНОВАЯ ОЧИСТКА ====
 async def weekly_cleanup():
     while True:
         now = datetime.now(NORILSK_TZ)
         if now.weekday() == 6 and now.hour == 0 and now.minute < 5:
             async with aiosqlite.connect("orders.db") as db:
                 await db.execute("DELETE FROM orders WHERE order_date < ?", (str(now.date()),))
+                await db.execute("DELETE FROM duty WHERE date < ?", (str(now.date()),))
                 await db.commit()
             await asyncio.sleep(3600)
         await asyncio.sleep(60)
