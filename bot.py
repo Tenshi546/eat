@@ -46,12 +46,28 @@ MENU_DATA = {
     4: {"Завтрак": "Горошек, тефтели рыбные, пюре, чай, апельсин", "Обед": "Салат морковный, рассольник, птица отварная и жареная, макароны, компот", "Полдник": "Булочка, кофейный напиток"}
 }
 
-RANKS = [
-    "🦗 Голодный кузнечик", "🦴 Скелетон", "🍞 Крошка хлеба", "🥚 Яйцо всмятку",
-    "🍗 Цыпленок табака", "🍟 Любитель картошки", "🌭 Хот-дог критик", "🍔 Бургер-стажер",
-    "🥪 Сэндвич-мастер", "🍕 Пицца-пацан", "🌮 Такос-воин", "🍣 Суши-ниндзя",
-    "🍜 Рамен-сенсей", "🥩 Стейк-самурай", "🍖 Мясной магнат", "👑 Куриный король",
-    "🔥 Повелитель гриля", "🍗 Генерал Гриль", "🌟 Легенда KFC", "👑 KFC BOSS"
+# Звания и их пороги (в скобках - сколько баллов нужно для получения)
+RANKS_DATA = [
+    ("🦗 Голодный кузнечик", 5),
+    ("🦴 Скелетон", 10),
+    ("🍞 Крошка хлеба", 20),
+    ("🥚 Яйцо всмятку", 30),
+    ("🍗 Цыпленок табака", 40),
+    ("🍟 Любитель картошки", 50),
+    ("🌭 Хот-дог критик", 60),
+    ("🍔 Бургер-стажер", 70),
+    ("🥪 Сэндвич-мастер", 85),
+    ("🍕 Пицца-пацан", 100),
+    ("🌮 Такос-воин", 120),
+    ("🍣 Суши-ниндзя", 140),
+    ("🍜 Рамен-сенсей", 160),
+    ("🥩 Стейк-самурай", 180),
+    ("🍖 Мясной магнат", 200),
+    ("👑 Куриный король", 230),
+    ("🔥 Повелитель гриля", 260),
+    ("🍗 Генерал Гриль", 300),
+    ("🌟 Легенда KFC", 350),
+    ("👑 KFC BOSS", 400)
 ]
 
 class Reg(StatesGroup):
@@ -166,7 +182,6 @@ async def reg_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
     if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
     await state.update_data(username=f"@{username}", is_admin=False)
-    # ИСПРАВЛЕНИЕ: answer вместо edit_text
     await call.message.answer("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_fio)
 
@@ -175,7 +190,6 @@ async def reg_admin_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
     if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
     await state.update_data(username=f"@{username}", is_admin=True)
-    # ИСПРАВЛЕНИЕ: answer вместо edit_text
     await call.message.answer("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_fio)
 
@@ -300,14 +314,53 @@ async def profile(message: Message):
             username, fio = user
             async with db.execute("SELECT meals FROM orders WHERE username = ?", (username,)) as cursor:
                 orders = await cursor.fetchall()
+                
+    # Подсчет баллов
+    score = 0.0
     b, l, p = 0, 0, 0
     for (meals,) in orders:
-        if "Завтрак" in meals: b += 1
-        if "Обед" in meals: l += 1
-        if "Полдник" in meals: p += 1
-    total = b + l + p
-    rank_idx = min(total // 3, len(RANKS) - 1)
-    text = f"👤 **Профиль**\n\n📛 ФИО: {fio}\n🔗 {username}\n\n🍳 Завтраков: {b}\n🍲 Обедов: {l}\n🥐 Полдников: {p}\n\n🏅 Звание: **{RANKS[rank_idx]}**"
+        if "Завтрак" in meals: 
+            b += 1
+            score += 0.5
+        if "Обед" in meals: 
+            l += 1
+            score += 1.0
+        if "Полдник" in meals: 
+            p += 1
+            score += 0.5
+
+    # Определение звания и следующего порога
+    current_rank = RANKS_DATA[0][0]
+    next_threshold = RANKS_DATA[0][1]
+    is_max = True
+    
+    for i, (rank_name, threshold) in enumerate(RANKS_DATA):
+        if score >= threshold:
+            current_rank = rank_name
+            if i + 1 < len(RANKS_DATA):
+                next_threshold = RANKS_DATA[i+1][1]
+                is_max = False
+            else:
+                next_threshold = threshold
+                is_max = True
+        else:
+            break
+            
+    # Форматирование прогресса
+    if is_max:
+        progress_text = "МАКСИМУМ"
+    else:
+        progress_text = f"({score} / {next_threshold})"
+
+    text = (
+        f"👤 **Профиль**\n\n"
+        f"📛 ФИО: {fio}\n"
+        f"🔗 {username}\n\n"
+        f"🍳 Завтраков: {b}\n"
+        f"🍲 Обедов: {l}\n"
+        f"🥐 Полдников: {p}\n\n"
+        f"🏅 Звание: **{current_rank}** {progress_text}"
+    )
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "🆘 Помощь")
