@@ -166,7 +166,8 @@ async def reg_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
     if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
     await state.update_data(username=f"@{username}", is_admin=False)
-    await call.message.edit_text("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
+    # ИСПРАВЛЕНИЕ: answer вместо edit_text
+    await call.message.answer("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_fio)
 
 @dp.callback_query(F.data == "reg_admin")
@@ -174,7 +175,8 @@ async def reg_admin_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
     if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
     await state.update_data(username=f"@{username}", is_admin=True)
-    await call.message.edit_text("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
+    # ИСПРАВЛЕНИЕ: answer вместо edit_text
+    await call.message.answer("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_fio)
 
 @dp.message(Reg.waiting_fio)
@@ -311,11 +313,8 @@ async def profile(message: Message):
 @dp.message(F.text == "🆘 Помощь")
 async def help_menu(message: Message):
     async with aiosqlite.connect("orders.db") as db:
-        # Получаем список всех ответственных
         async with db.execute("SELECT username, fio FROM users WHERE is_admin = 1") as cursor:
             admins = await cursor.fetchall()
-        
-        # Узнаем, кто сегодня дежурит
         today = str(datetime.now(NORILSK_TZ).date())
         async with db.execute("SELECT fio FROM duty WHERE date = ?", (today,)) as cursor:
             duty = await cursor.fetchone()
@@ -371,7 +370,6 @@ async def admin_duty_confirm(message: Message, state: FSMContext):
         return await message.answer("Пожалуйста, выбери Да или Нет с помощью кнопок.")
         
     await state.clear()
-    # После ответа показываем саму панель
     await show_admin_menu(message)
 
 def get_admin_kb():
