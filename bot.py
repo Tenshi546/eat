@@ -405,13 +405,9 @@ async def help_menu(message: Message):
             help_text = (await cursor.fetchone())[0]
     await message.answer(f"🆘 **Помощь**\n\n{help_text}", parse_mode="Markdown")
 
-# ==== АДМИН ПАНЕЛЬ ====
+# ==== АДМИН ПАНЕЛЬ (ДОСТУПНА ВСЕМ ПО КОМАНДЕ) ====
 @dp.message(Command(ADMIN_COMMAND))
 async def admin_command(message: Message, state: FSMContext):
-    async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT is_admin FROM users WHERE chat_id = ? AND is_logged_in = 1", (message.chat.id,)) as cursor:
-            res = await cursor.fetchone()
-            if not res or res[0] == 0: return await message.answer("У тебя нет прав для входа в админку.")
     text = (
         "👑 **Добро пожаловать в супер-админку!**\n\n"
         "Тут ты можешь управлять всем ботом, не трогая код.\n\n"
@@ -863,7 +859,6 @@ async def my_orders(message: Message):
 # ==== ОБРАБОТЧИК КАСТОМНЫХ КНОПОК ====
 @dp.message(F.text, ~F.text.startswith("/"))
 async def handle_custom_buttons(message: Message):
-    # Игнорируем системные кнопки, чтобы не было конфликтов
     if message.text in ["🍽 Сделать заказ", "📋 Мои заказы", "👤 Профиль", "🏆 Лидеры", "🆘 Помощь", "🚪 Выйти", "📥 Панель ответственного"]:
         return
 
