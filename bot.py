@@ -137,8 +137,8 @@ def get_start_kb():
 def get_main_menu(is_admin=False):
     kb = [
         [KeyboardButton(text="🍽 Сделать заказ"), KeyboardButton(text="📋 Мои заказы")],
-        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🆘 Помощь")],
-        [KeyboardButton(text="🚪 Выйти")]
+        [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="🏆 Лидеры")],
+        [KeyboardButton(text="🆘 Помощь"), KeyboardButton(text="🚪 Выйти")]
     ]
     if is_admin:
         kb.insert(1, [KeyboardButton(text="📥 Панель ответственного")])
@@ -305,6 +305,7 @@ async def logout(message: Message, state: FSMContext):
     await message.answer("Вы вышли из аккаунта.", reply_markup=get_start_kb())
     await state.clear()
 
+# ==== ПРОФИЛЬ ====
 @dp.message(F.text == "👤 Профиль")
 async def profile(message: Message):
     async with aiosqlite.connect("orders.db") as db:
@@ -315,7 +316,6 @@ async def profile(message: Message):
             async with db.execute("SELECT meals FROM orders WHERE username = ?", (username,)) as cursor:
                 orders = await cursor.fetchall()
                 
-    # Подсчет баллов
     score = 0.0
     b, l, p = 0, 0, 0
     for (meals,) in orders:
@@ -329,24 +329,21 @@ async def profile(message: Message):
             p += 1
             score += 0.5
 
-    # Определение звания и следующего порога
     current_rank = RANKS_DATA[0][0]
     next_threshold = RANKS_DATA[0][1]
-    is_max = True
+    is_max = False
     
     for i, (rank_name, threshold) in enumerate(RANKS_DATA):
         if score >= threshold:
             current_rank = rank_name
             if i + 1 < len(RANKS_DATA):
                 next_threshold = RANKS_DATA[i+1][1]
-                is_max = False
             else:
                 next_threshold = threshold
                 is_max = True
         else:
             break
             
-    # Форматирование прогресса
     if is_max:
         progress_text = "МАКСИМУМ"
     else:
@@ -361,6 +358,52 @@ async def profile(message: Message):
         f"🥐 Полдников: {p}\n\n"
         f"🏅 Звание: **{current_rank}** {progress_text}"
     )
+    await message.answer(text, parse_mode="Markdown")
+
+# ==== ЛИДЕРЫ ====
+@dp.message(F.text == "🏆 Лидеры")
+async def leaderboard(message: Message):
+    async with aiosqlite.connect("orders.db") as db:
+        # Получаем всех юзеров и все заказы
+        async with db.execute("SELECT username, fio FROM users WHERE is_admin = 0") as cursor:
+            users = await cursor.fetchall()
+        async with db.execute("SELECT username, meals, created_at FROM orders ORDER BY created_at ASC") as cursor:
+            orders = await cursor.fetchall()
+
+    scores = {u[0]: {"fio": u[1], "score": 0.0, "first_order": "9999-12-31 23:59"} for u in users}
+    
+    for uname, meals, created_at in orders:
+        if uname in scores:
+            if "Завтрак" in meals: scores[uname]["score"] += 0.5
+            if "Обед" in meals: scores[uname]["score"] += 1.0
+            if "Полдник" in meals: scores[uname]["score"] += 0.5
+            
+            if created_at < scores[uname]["first_order"]:
+                scores[uname]["first_order"] = created_at
+
+    # Сортируем: сначала по баллам (по убыванию), потом по времени первого заказа (по возрастанию)
+    sorted_users = sorted(scores.items(), key=lambda item: (-item[1]["score"], item[1]["first_order"]))
+    
+    text = "🏆 **Топ-5 лидеров:**\n\n"
+    count = 0
+    for uname, data in sorted_users:
+        if data["score"] == 0: continue # Пропускаем тех, у кого нет заказов
+        count += 1
+        if count > 5: break
+        
+        # Определяем звание для лидера
+        rank_name = RANKS_DATA[0][0]
+        for r_name, threshold in RANKS_DATA:
+            if data["score"] >= threshold:
+                rank_name = r_name
+            else:
+                break
+                
+        text += f"{count}. {data['fio']} — {data['score']} баллов\n   {rank_name}\n\n"
+        
+    if count == 0:
+        text += "Пока никто не сделал заказ."
+        
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "🆘 Помощь")
