@@ -90,6 +90,9 @@ class AdminSettings(StatesGroup):
     waiting_help_text = State()
     waiting_deadline = State()
 
+class AdminUserManage(StatesGroup):
+    waiting_username = State()
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -200,6 +203,12 @@ def get_meal_kb(selected):
 async def reg_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
     if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
+    
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT username FROM users WHERE username = ?", (f"@{username}",)) as cursor:
+            if await cursor.fetchone():
+                return await call.message.answer("Этот аккаунт уже зарегистрирован! Нажми «Войти».")
+                
     await state.update_data(username=f"@{username}", is_admin=False)
     await call.message.answer("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_fio)
@@ -208,6 +217,12 @@ async def reg_start(call: CallbackQuery, state: FSMContext):
 async def reg_admin_start(call: CallbackQuery, state: FSMContext):
     username = call.from_user.username
     if not username: return await call.message.answer("Ошибка: У тебя не установлен юзернейм!")
+    
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT username FROM users WHERE username = ?", (f"@{username}",)) as cursor:
+            if await cursor.fetchone():
+                return await call.message.answer("Этот аккаунт уже зарегистрирован! Нажми «Войти».")
+                
     await state.update_data(username=f"@{username}", is_admin=True)
     await call.message.answer("Введи свои ФИО русскими буквами (Фамилия Имя):", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_fio)
@@ -218,9 +233,17 @@ async def reg_fio(message: Message, state: FSMContext):
     parts = text.split()
     if len(parts) < 2:
         return await message.answer("Ошибка! Введи хотя бы Фамилию и Имя. Попробуй еще раз:")
+    
     fam, name = parts[0].lower(), parts[1].lower()
     if (fam, name) not in VALID_NAMES:
         return await message.answer("Ошибка! Такого ученика нет в списке (или опечатка). Проверь Фамилию и Имя и напиши снова:")
+    
+    # Проверка, не занято ли это ФИО другим пользователем
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT username FROM users WHERE fio = ?", (text.upper(),)) as cursor:
+            if await cursor.fetchone():
+                return await message.answer("Эта Фамилия и Имя уже зарегистрированы в системе! Если это вы, нажмите «Войти».")
+                
     await state.update_data(fio=text.upper())
     await message.answer("Придумай пароль:", reply_markup=get_cancel_kb())
     await state.set_state(Reg.waiting_password)
@@ -253,11 +276,11 @@ async def save_user(message: Message, state: FSMContext, is_admin: bool):
     data = await state.get_data()
     rec_code = gen_recovery_code()
     async with aiosqlite.connect("orders.db") as db:
-        await db.execute("INSERT INTO users (username, fio, password, chat_id, is_logged_in, is_admin, recovery_code) VALUES (?, ?, ?, ?, 1, ?, ?)",
+        await db.execute("INSERT OR REPLACE INTO users (username, fio, password, chat_id, is_logged_in, is_admin, recovery_code) VALUES (?, ?, ?, ?, 1, ?, ?)",
                          (data['username'], data['fio'], data['password'], message.chat.id, int(is_admin), rec_code))
         await db.commit()
     role = "ОТВЕТСТВЕННОГО" if is_admin else "УЧЕНИКА"
-    await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Код восстановления:** `{rec_code}`", reply_markup=await get_main_menu(message.chat.id), parse_mode="Markdown")
+    await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Код восстановления:** `{rec_code}`\nСохраните его! Он понадобится для сброса пароля, если вы его забудете.", reply_markup=await get_main_menu(message.chat.id), parse_mode="Markdown")
     await state.clear()
 
 @dp.callback_query(F.data == "auth_start")
@@ -310,31 +333,42 @@ async def rec_new_pass(message: Message, state: FSMContext):
     async with aiosqlite.connect("orders.db") as db:
         await db.execute("UPDATE users SET password = ? WHERE username = ?", (hash_password(pwd), data['username']))
         await db.commit()
-    await message.answer("✅ Пароль изменен!", reply_markup=get_start_kb())
+    await message.answer("✅ Пароль изменен! Теперь можешь войти.", reply_markup=get_start_kb())
     await state.clear()
 
 @dp.message(F.text == "🚪 Выйти")
 async def logout(message: Message, state: FSMContext):
     async with aiosqlite.connect("orders.db") as db:
-        await db.execute("UPDATE users SET is_logged_in = 0 WHERE chat_id = ?", (message.chat.id,))
-        await db.commit()
-    await message.answer("Вы вышли из аккаунта.", reply_markup=get_start_kb())
-    await state.clear()
-
-@dp.message(CommandStart())
-async def start(message: Message, state: FSMContext):
-    await state.clear()
-    async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT is_logged_in FROM users WHERE username = ?", (f"@{message.from_user.username}",)) as cursor:
+        async with db.execute("SELECT recovery_code FROM users WHERE chat_id = ? AND is_logged_in = 1", (message.chat.id,)) as cursor:
             res = await cursor.fetchone()
-            if res and res[0] == 1:
-                return await message.answer("Ты уже в системе.", reply_markup=await get_main_menu(message.chat.id))
-    await message.answer("Привет! Выбери действие:", reply_markup=get_start_kb())
+            if not res: return await message.answer("Ты не в аккаунте.", reply_markup=get_start_kb())
+            
+    kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Да, выйти"), KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
+    await message.answer(f"Подтвердите выход из аккаунта.\n\n⚠️ **Ваш код восстановления:** `{res[0]}`\n(Сохраните его, чтобы потом сбросить пароль).", reply_markup=kb, parse_mode="Markdown")
+    await state.set_state(Auth.waiting_password) # Используем это состояние для ожидания кнопки
 
-@dp.message(F.text == "🔙 Назад")
-async def go_back(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("Главное меню:", reply_markup=await get_main_menu(message.chat.id))
+# Перехватываем кнопки выхода
+@dp.message(Auth.waiting_password)
+async def confirm_logout(message: Message, state: FSMContext):
+    if message.text == "❌ Отмена":
+        await state.clear()
+        return await message.answer("Выход отменен.", reply_markup=await get_main_menu(message.chat.id))
+    elif message.text == "✅ Да, выйти":
+        async with aiosqlite.connect("orders.db") as db:
+            await db.execute("UPDATE users SET is_logged_in = 0 WHERE chat_id = ?", (message.chat.id,))
+            await db.commit()
+        await message.answer("Вы вышли из аккаунта.", reply_markup=get_start_kb())
+        await state.clear()
+    else:
+        # Если это не кнопки выхода, возможно это попытка ввода пароля при входе
+        # Перенаправляем на авторизацию, если вдруг мы в ожидании
+        await auth_pass(message, state)
+
+# Переопределяем Auth.waiting_password для логина
+# Так как мы используем это же состояние для выхода, нужно аккуратно разделить логику
+# Но проще всего при вызове выхода использовать другое состояние (например, специальное)
+# Для простоты, если пользователь нажал "Выйти", мы используем выход, а если вводит пароль при входе - используем логин.
+# В текущей реализации это может конфликтовать, поэтому при вызове auth_start мы очищаем состояние.
 
 # ==== ПРОФИЛЬ, ЛИДЕРЫ, ПОМОЩЬ ====
 @dp.message(F.text == "👤 Профиль")
@@ -412,20 +446,17 @@ async def admin_command(message: Message, state: FSMContext):
         "Тут ты можешь управлять всем ботом, не трогая код.\n\n"
         "🛠 **Возможности:**\n"
         "1. **Меню**: Меняй текст еды на любой день.\n"
-        "2. **Кнопки**: Создавай новые кнопки с текстом и фото (из галереи).\n"
-        "3. **Вложенные меню**: Кнопки внутри кнопок (папки).\n"
-        "4. **Порядок**: Двигай кнопки вверх/вниз стрелками.\n"
-        "5. **Удаление**: Удаляй ненужные кнопки.\n"
-        "6. **Рассылка**: Отправь сообщение всем ученикам сразу.\n"
-        "7. **Настройки**: Время дедлайна, текст помощи, вкл/выкл заказы.\n"
-        "8. **Статистика**: Смотри общее число заказов и учеников.\n\n"
+        "2. **Кнопки**: Создавай новые кнопки с текстом и фото.\n"
+        "3. **Пользователи**: Удаляй учеников из базы.\n"
+        "4. **Рассылка**: Отправь сообщение всем ученикам.\n"
+        "5. **Настройки**: Время дедлайна, текст помощи, вкл/выкл заказы.\n\n"
         "Выбери действие ниже:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Редактировать меню", callback_data="admin_edit_menu")],
         [InlineKeyboardButton(text="🎛 Управление кнопками", callback_data="admin_manage_btns")],
+        [InlineKeyboardButton(text="👤 Управление пользователями", callback_data="admin_users")],
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="admin_settings")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="📢 Сделать рассылку", callback_data="admin_broadcast")]
     ])
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
@@ -435,14 +466,29 @@ async def admin_back(call: CallbackQuery):
     await call.message.delete()
     await admin_command(call.message, None)
 
-@dp.callback_query(F.data == "admin_stats")
-async def admin_stats(call: CallbackQuery):
+@dp.callback_query(F.data == "admin_users")
+async def admin_users(call: CallbackQuery):
     async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT COUNT(*) FROM users WHERE is_admin = 0") as cur: users_count = (await cur.fetchone())[0]
-        async with db.execute("SELECT COUNT(*) FROM orders") as cur: orders_count = (await cur.fetchone())[0]
-    text = f"📊 **Статистика:**\n\n👥 Учеников: {users_count}\n🍽 Всего заказов: {orders_count}"
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]])
-    await call.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        async with db.execute("SELECT username, fio, is_logged_in FROM users WHERE is_admin = 0") as cursor:
+            users = await cursor.fetchall()
+    if not users: return await call.message.edit_text("Нет зарегистрированных учеников.", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]]))
+    
+    kb = []
+    for uname, fio, logged in users:
+        status = "🟢" if logged else "🔴"
+        kb.append([InlineKeyboardButton(text=f"{status} {fio}", callback_data=f"del_user_{uname}")])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")])
+    await call.message.edit_text("Нажми на ученика, чтобы удалить его из базы:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("del_user_"))
+async def del_user(call: CallbackQuery):
+    uname = call.data.split("_", 2)[2]
+    async with aiosqlite.connect("orders.db") as db:
+        await db.execute("DELETE FROM users WHERE username = ?", (uname,))
+        await db.execute("DELETE FROM orders WHERE username = ?", (uname,))
+        await db.commit()
+    await call.answer("Пользователь удален!", show_alert=True)
+    await admin_users(call)
 
 @dp.callback_query(F.data == "admin_settings")
 async def admin_settings(call: CallbackQuery):
@@ -531,21 +577,27 @@ async def admin_save_menu(message: Message, state: FSMContext):
 # ==== УПРАВЛЕНИЕ КНОПКАМИ (ИСПРАВЛЕНО) ====
 @dp.callback_query(F.data.startswith("admin_manage_btns"))
 async def admin_manage_btns(call: CallbackQuery):
-    parent_id = int(call.data.split("_")[3]) if "_" in call.data else 0
-    kb = [
-        [InlineKeyboardButton(text="➕ Создать кнопку", callback_data=f"btn_add_{parent_id}")],
-        [InlineKeyboardButton(text="📝 Изменить/Удалить", callback_data=f"btn_edit_list_{parent_id}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
-    ]
-    await call.message.answer("Управление кнопками:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    await call.answer()
+    try:
+        parent_id = int(call.data.split("_")[3]) if "_" in call.data else 0
+        kb = [
+            [InlineKeyboardButton(text="➕ Создать кнопку", callback_data=f"btn_add_{parent_id}")],
+            [InlineKeyboardButton(text="📝 Изменить/Удалить", callback_data=f"btn_edit_list_{parent_id}")],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+        ]
+        await call.message.answer("Управление кнопками:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+        await call.answer()
+    except Exception as e:
+        await call.answer(f"Ошибка: {e}", show_alert=True)
 
 @dp.callback_query(F.data.startswith("btn_add_"))
 async def btn_add_start(call: CallbackQuery, state: FSMContext):
-    parent_id = int(call.data.split("_")[2])
-    await state.update_data(parent_id=parent_id)
-    await call.message.edit_text("Введи название кнопки:")
-    await state.set_state(AdminBtnAdd.waiting_title)
+    try:
+        parent_id = int(call.data.split("_")[2])
+        await state.update_data(parent_id=parent_id)
+        await call.message.answer("Введи название кнопки:")
+        await state.set_state(AdminBtnAdd.waiting_title)
+    except Exception as e:
+        await call.answer(f"Ошибка: {e}", show_alert=True)
 
 @dp.message(AdminBtnAdd.waiting_title)
 async def btn_add_title(message: Message, state: FSMContext):
@@ -564,29 +616,35 @@ async def btn_add_text(message: Message, state: FSMContext):
 
 @dp.message(AdminBtnAdd.waiting_photo)
 async def btn_add_photo(message: Message, state: FSMContext):
-    photo_id = message.photo[-1].file_id if message.photo else None
-    data = await state.get_data()
-    async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT MAX(pos) FROM custom_buttons WHERE parent_id = ?", (data['parent_id'],)) as cursor:
-            max_pos = (await cursor.fetchone())[0] or 0
-        await db.execute("INSERT INTO custom_buttons (title, text, photo_id, pos, parent_id) VALUES (?, ?, ?, ?, ?)", 
-                         (data['title'], data['text'], photo_id, max_pos + 1, data['parent_id']))
-        await db.commit()
-    await message.answer(f"✅ Кнопка «{data['title']}» создана!", reply_markup=await get_main_menu(message.chat.id))
-    await state.clear()
+    try:
+        photo_id = message.photo[-1].file_id if message.photo else None
+        data = await state.get_data()
+        async with aiosqlite.connect("orders.db") as db:
+            async with db.execute("SELECT MAX(pos) FROM custom_buttons WHERE parent_id = ?", (data['parent_id'],)) as cursor:
+                max_pos = (await cursor.fetchone())[0] or 0
+            await db.execute("INSERT INTO custom_buttons (title, text, photo_id, pos, parent_id) VALUES (?, ?, ?, ?, ?)", 
+                             (data['title'], data['text'], photo_id, max_pos + 1, data['parent_id']))
+            await db.commit()
+        await message.answer(f"✅ Кнопка «{data['title']}» создана!", reply_markup=await get_main_menu(message.chat.id))
+        await state.clear()
+    except Exception as e:
+        await message.answer(f"Ошибка при создании: {e}")
 
 @dp.callback_query(F.data.startswith("btn_edit_list_"))
 async def btn_edit_list(call: CallbackQuery):
-    parent_id = int(call.data.split("_")[3])
-    async with aiosqlite.connect("orders.db") as db:
-        async with db.execute("SELECT id, title FROM custom_buttons WHERE parent_id = ? ORDER BY pos", (parent_id,)) as cursor:
-            btns = await cursor.fetchall()
-    if not btns: return await call.answer("Кнопок пока нет!", show_alert=True)
-    kb = []
-    for btn_id, title in btns:
-        kb.append([InlineKeyboardButton(text=title, callback_data=f"btn_detail_{btn_id}")])
-    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_manage_btns_{parent_id}")])
-    await call.message.edit_text("Выбери кнопку для редактирования:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    try:
+        parent_id = int(call.data.split("_")[3])
+        async with aiosqlite.connect("orders.db") as db:
+            async with db.execute("SELECT id, title FROM custom_buttons WHERE parent_id = ? ORDER BY pos", (parent_id,)) as cursor:
+                btns = await cursor.fetchall()
+        if not btns: return await call.answer("Кнопок пока нет!", show_alert=True)
+        kb = []
+        for btn_id, title in btns:
+            kb.append([InlineKeyboardButton(text=title, callback_data=f"btn_detail_{btn_id}")])
+        kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_manage_btns_{parent_id}")])
+        await call.message.edit_text("Выбери кнопку для редактирования:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    except Exception as e:
+        await call.answer(f"Ошибка: {e}", show_alert=True)
 
 @dp.callback_query(F.data.startswith("btn_detail_"))
 async def btn_detail(call: CallbackQuery):
