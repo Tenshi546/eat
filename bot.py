@@ -63,6 +63,9 @@ class Reg(StatesGroup):
 class Auth(StatesGroup):
     waiting_password = State()
 
+class Logout(StatesGroup):
+    waiting_confirm = State()
+
 class Recovery(StatesGroup):
     waiting_code = State()
     waiting_new_password = State()
@@ -90,9 +93,6 @@ class AdminSettings(StatesGroup):
     waiting_help_text = State()
     waiting_deadline = State()
 
-class AdminUserManage(StatesGroup):
-    waiting_username = State()
-
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
@@ -103,6 +103,8 @@ def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 async def init_db():
+    # ВНИМАНИЕ: Эта строка удаляет базу при каждом перезапуске, чтобы почистить ошибки. 
+    # Позже, когда все заработает, её можно будет удалить, чтобы заказы сохранялись!
     if os.path.exists("orders.db"):
         try: os.remove("orders.db")
         except: pass
@@ -198,6 +200,21 @@ def get_meal_kb(selected):
     kb.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
+@dp.message(CommandStart())
+async def start(message: Message, state: FSMContext):
+    await state.clear()
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT is_logged_in FROM users WHERE username = ?", (f"@{message.from_user.username}",)) as cursor:
+            res = await cursor.fetchone()
+            if res and res[0] == 1:
+                return await message.answer("Ты уже в системе.", reply_markup=await get_main_menu(message.chat.id))
+    await message.answer("Привет! Выбери действие:", reply_markup=get_start_kb())
+
+@dp.message(F.text == "🔙 Назад")
+async def go_back(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Главное меню:", reply_markup=await get_main_menu(message.chat.id))
+
 # ==== РЕГИСТРАЦИЯ И ВХОД ====
 @dp.callback_query(F.data == "reg_start")
 async def reg_start(call: CallbackQuery, state: FSMContext):
@@ -238,11 +255,10 @@ async def reg_fio(message: Message, state: FSMContext):
     if (fam, name) not in VALID_NAMES:
         return await message.answer("Ошибка! Такого ученика нет в списке (или опечатка). Проверь Фамилию и Имя и напиши снова:")
     
-    # Проверка, не занято ли это ФИО другим пользователем
     async with aiosqlite.connect("orders.db") as db:
         async with db.execute("SELECT username FROM users WHERE fio = ?", (text.upper(),)) as cursor:
             if await cursor.fetchone():
-                return await message.answer("Эта Фамилия и Имя уже зарегистрированы в системе! Если это вы, нажмите «Войти».")
+                return await message.answer("Эта Фамилия и Имя уже зарегистрированы! Если это вы, нажмите «Войти».")
                 
     await state.update_data(fio=text.upper())
     await message.answer("Придумай пароль:", reply_markup=get_cancel_kb())
@@ -280,7 +296,7 @@ async def save_user(message: Message, state: FSMContext, is_admin: bool):
                          (data['username'], data['fio'], data['password'], message.chat.id, int(is_admin), rec_code))
         await db.commit()
     role = "ОТВЕТСТВЕННОГО" if is_admin else "УЧЕНИКА"
-    await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Код восстановления:** `{rec_code}`\nСохраните его! Он понадобится для сброса пароля, если вы его забудете.", reply_markup=await get_main_menu(message.chat.id), parse_mode="Markdown")
+    await message.answer(f"✅ Успешная регистрация {role}!\nФИО: {data['fio']}\n\n⚠️ **Код восстановления:** `{rec_code}`\nСохраните его! Он понадобится для сброса пароля.", reply_markup=await get_main_menu(message.chat.id), parse_mode="Markdown")
     await state.clear()
 
 @dp.callback_query(F.data == "auth_start")
@@ -345,10 +361,9 @@ async def logout(message: Message, state: FSMContext):
             
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Да, выйти"), KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
     await message.answer(f"Подтвердите выход из аккаунта.\n\n⚠️ **Ваш код восстановления:** `{res[0]}`\n(Сохраните его, чтобы потом сбросить пароль).", reply_markup=kb, parse_mode="Markdown")
-    await state.set_state(Auth.waiting_password) # Используем это состояние для ожидания кнопки
+    await state.set_state(Logout.waiting_confirm)
 
-# Перехватываем кнопки выхода
-@dp.message(Auth.waiting_password)
+@dp.message(Logout.waiting_confirm)
 async def confirm_logout(message: Message, state: FSMContext):
     if message.text == "❌ Отмена":
         await state.clear()
@@ -360,15 +375,7 @@ async def confirm_logout(message: Message, state: FSMContext):
         await message.answer("Вы вышли из аккаунта.", reply_markup=get_start_kb())
         await state.clear()
     else:
-        # Если это не кнопки выхода, возможно это попытка ввода пароля при входе
-        # Перенаправляем на авторизацию, если вдруг мы в ожидании
-        await auth_pass(message, state)
-
-# Переопределяем Auth.waiting_password для логина
-# Так как мы используем это же состояние для выхода, нужно аккуратно разделить логику
-# Но проще всего при вызове выхода использовать другое состояние (например, специальное)
-# Для простоты, если пользователь нажал "Выйти", мы используем выход, а если вводит пароль при входе - используем логин.
-# В текущей реализации это может конфликтовать, поэтому при вызове auth_start мы очищаем состояние.
+        await message.answer("Пожалуйста, выбери Да или Отмена с помощью кнопок.")
 
 # ==== ПРОФИЛЬ, ЛИДЕРЫ, ПОМОЩЬ ====
 @dp.message(F.text == "👤 Профиль")
@@ -574,7 +581,7 @@ async def admin_save_menu(message: Message, state: FSMContext):
     await message.answer("✅ Меню обновлено!", reply_markup=await get_main_menu(message.chat.id))
     await state.clear()
 
-# ==== УПРАВЛЕНИЕ КНОПКАМИ (ИСПРАВЛЕНО) ====
+# ==== УПРАВЛЕНИЕ КНОПКАМИ ====
 @dp.callback_query(F.data.startswith("admin_manage_btns"))
 async def admin_manage_btns(call: CallbackQuery):
     try:
