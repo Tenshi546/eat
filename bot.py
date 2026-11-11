@@ -2,7 +2,7 @@ import asyncio
 import os
 import aiosqlite
 import hashlib
-from datetime import datetime, timedelta, timezone, date
+from datetime import datetime, timedelta, timezone
 from flask import Flask
 from threading import Thread
 from aiogram import Bot, Dispatcher, F
@@ -36,7 +36,6 @@ for student in STUDENTS:
     if len(parts) >= 2:
         VALID_NAMES.add((parts[0].lower(), parts[1].lower()))
 
-# Пустое меню по умолчанию (настраивается через админку)
 DEFAULT_MENU = {
     "0": {"Завтрак": "Не настроено", "Обед": "Не настроено", "Полдник": "Не настроено"},
     "1": {"Завтрак": "Не настроено", "Обед": "Не настроено", "Полдник": "Не настроено"},
@@ -98,12 +97,7 @@ def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 async def init_db():
-    # ВНИМАНИЕ: Эта строка удаляет базу при каждом перезапуске, чтобы почистить ошибки. 
-    # Когда убедишься, что всё работает, удали эти две строки, чтобы заказы сохранялись!
-    if os.path.exists("orders.db"):
-        try: os.remove("orders.db")
-        except: pass
-
+    # ВАЖНО: Удаление базы убрано! Теперь данные сохраняются.
     async with aiosqlite.connect("orders.db") as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -422,7 +416,7 @@ async def help_menu(message: Message):
 
 # ==== АДМИН ПАНЕЛЬ ====
 @dp.message(Command(ADMIN_COMMAND))
-async def admin_command(message: Message, state: FSMContext):
+async def admin_command(message: Message, state: FSMContext = None):
     text = (
         "👑 **Добро пожаловать в супер-админку!**\n\n"
         "🛠 **Возможности:**\n"
@@ -443,9 +437,12 @@ async def admin_command(message: Message, state: FSMContext):
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 @dp.callback_query(F.data == "admin_back")
-async def admin_back(call: CallbackQuery):
-    await call.message.delete()
-    await admin_command(call.message, None)
+async def admin_back(call: CallbackQuery, state: FSMContext):
+    try:
+        await call.message.delete()
+    except:
+        pass
+    await admin_command(call.message, state)
 
 @dp.callback_query(F.data == "admin_users")
 async def admin_users(call: CallbackQuery):
@@ -555,30 +552,22 @@ async def admin_save_menu(message: Message, state: FSMContext):
     await message.answer("✅ Меню обновлено!", reply_markup=await get_main_menu(message.chat.id))
     await state.clear()
 
-# ==== УПРАВЛЕНИЕ КНОПКАМИ ====
-@dp.callback_query(F.data.startswith("admin_manage_btns"))
+# ==== УПРАВЛЕНИЕ КНОПКАМИ (ИСПРАВЛЕНО) ====
+@dp.callback_query(F.data == "admin_manage_btns")
 async def admin_manage_btns(call: CallbackQuery):
-    try:
-        parent_id = int(call.data.split("_")[3]) if "_" in call.data else 0
-        kb = [
-            [InlineKeyboardButton(text="➕ Создать кнопку", callback_data=f"btn_add_{parent_id}")],
-            [InlineKeyboardButton(text="📝 Изменить/Удалить", callback_data=f"btn_edit_list_{parent_id}")],
-            [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
-        ]
-        await call.message.answer("Управление кнопками:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-        await call.answer()
-    except Exception as e:
-        await call.answer(f"Ошибка: {e}", show_alert=True)
+    kb = [
+        [InlineKeyboardButton(text="➕ Создать кнопку", callback_data="btn_add_0")],
+        [InlineKeyboardButton(text="📝 Изменить/Удалить", callback_data="btn_edit_list_0")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
+    ]
+    await call.message.answer("Управление кнопками (корень):", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data.startswith("btn_add_"))
 async def btn_add_start(call: CallbackQuery, state: FSMContext):
-    try:
-        parent_id = int(call.data.split("_")[2])
-        await state.update_data(parent_id=parent_id)
-        await call.message.answer("Введи название кнопки:")
-        await state.set_state(AdminBtnAdd.waiting_title)
-    except Exception as e:
-        await call.answer(f"Ошибка: {e}", show_alert=True)
+    parent_id = int(call.data.split("_")[2])
+    await state.update_data(parent_id=parent_id)
+    await call.message.answer("Введи название кнопки:")
+    await state.set_state(AdminBtnAdd.waiting_title)
 
 @dp.message(AdminBtnAdd.waiting_title)
 async def btn_add_title(message: Message, state: FSMContext):
@@ -597,35 +586,29 @@ async def btn_add_text(message: Message, state: FSMContext):
 
 @dp.message(AdminBtnAdd.waiting_photo)
 async def btn_add_photo(message: Message, state: FSMContext):
-    try:
-        photo_id = message.photo[-1].file_id if message.photo else None
-        data = await state.get_data()
-        async with aiosqlite.connect("orders.db") as db:
-            async with db.execute("SELECT MAX(pos) FROM custom_buttons WHERE parent_id = ?", (data['parent_id'],)) as cursor:
-                max_pos = (await cursor.fetchone())[0] or 0
-            await db.execute("INSERT INTO custom_buttons (title, text, photo_id, pos, parent_id) VALUES (?, ?, ?, ?, ?)", 
-                             (data['title'], data['text'], photo_id, max_pos + 1, data['parent_id']))
-            await db.commit()
-        await message.answer(f"✅ Кнопка «{data['title']}» создана!", reply_markup=await get_main_menu(message.chat.id))
-        await state.clear()
-    except Exception as e:
-        await message.answer(f"Ошибка при создании: {e}")
+    photo_id = message.photo[-1].file_id if message.photo else None
+    data = await state.get_data()
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT MAX(pos) FROM custom_buttons WHERE parent_id = ?", (data['parent_id'],)) as cursor:
+            max_pos = (await cursor.fetchone())[0] or 0
+        await db.execute("INSERT INTO custom_buttons (title, text, photo_id, pos, parent_id) VALUES (?, ?, ?, ?, ?)", 
+                         (data['title'], data['text'], photo_id, max_pos + 1, data['parent_id']))
+        await db.commit()
+    await message.answer(f"✅ Кнопка «{data['title']}» создана!", reply_markup=await get_main_menu(message.chat.id))
+    await state.clear()
 
 @dp.callback_query(F.data.startswith("btn_edit_list_"))
 async def btn_edit_list(call: CallbackQuery):
-    try:
-        parent_id = int(call.data.split("_")[3])
-        async with aiosqlite.connect("orders.db") as db:
-            async with db.execute("SELECT id, title FROM custom_buttons WHERE parent_id = ? ORDER BY pos", (parent_id,)) as cursor:
-                btns = await cursor.fetchall()
-        if not btns: return await call.answer("Кнопок пока нет!", show_alert=True)
-        kb = []
-        for btn_id, title in btns:
-            kb.append([InlineKeyboardButton(text=title, callback_data=f"btn_detail_{btn_id}")])
-        kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_manage_btns_{parent_id}")])
-        await call.message.edit_text("Выбери кнопку для редактирования:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-    except Exception as e:
-        await call.answer(f"Ошибка: {e}", show_alert=True)
+    parent_id = int(call.data.split("_")[3])
+    async with aiosqlite.connect("orders.db") as db:
+        async with db.execute("SELECT id, title FROM custom_buttons WHERE parent_id = ? ORDER BY pos", (parent_id,)) as cursor:
+            btns = await cursor.fetchall()
+    if not btns: return await call.answer("Кнопок пока нет!", show_alert=True)
+    kb = []
+    for btn_id, title in btns:
+        kb.append([InlineKeyboardButton(text=title, callback_data=f"btn_detail_{btn_id}")])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data="admin_manage_btns")])
+    await call.message.edit_text("Выбери кнопку для редактирования:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data.startswith("btn_detail_"))
 async def btn_detail(call: CallbackQuery):
@@ -736,22 +719,43 @@ async def show_admin_menu(message: Message):
 
 @dp.callback_query(F.data == "admin_current")
 async def admin_current(call: CallbackQuery):
-    now = datetime.now(NORILSK_TZ).date()
+    now = datetime.now(NORILSK_TZ)
+    today = now.date()
+    tomorrow = today + timedelta(days=1)
+    
+    # Твоя логика: сегодняшние пропадают в 10:00, завтрашние появляются в 11:00
+    show_today = now.hour < 10
+    show_tomorrow = now.hour >= 11
+    
     async with aiosqlite.connect("orders.db") as db:
         async with db.execute("""
             SELECT o.order_date, u.fio, u.username, o.meals FROM orders o 
             JOIN users u ON o.username = u.username 
             WHERE o.order_date >= ? ORDER BY o.order_date ASC, o.id ASC
-        """, (str(now),)) as cursor:
-            orders = await cursor.fetchall()
-    if not orders: return await call.message.edit_text("Актуальных заявок нет.", reply_markup=get_admin_kb())
+        """, (str(today),)) as cursor:
+            all_orders = await cursor.fetchall()
+            
+    filtered_orders = []
+    for order in all_orders:
+        o_date = order[0]
+        if o_date == str(today) and show_today:
+            filtered_orders.append(order)
+        elif o_date == str(tomorrow) and show_tomorrow:
+            filtered_orders.append(order)
+        elif o_date > str(tomorrow):
+            filtered_orders.append(order) # Будущие заявки (если разрешим заказ на неделю вперед)
+            
+    if not filtered_orders: 
+        return await call.message.edit_text("Актуальных заявок нет (сегодняшние скрываются в 10:00, завтрашние появляются в 11:00).", reply_markup=get_admin_kb())
+        
     text = "📅 **Актуальные заявки:**\n\n"
     curr_date = None
-    for o_date, fio, uname, meals in orders:
+    for o_date, fio, uname, meals in filtered_orders:
         if o_date != curr_date:
             text += f"📌 **{o_date}**\n"
             curr_date = o_date
         text += f"👤 {fio} ({uname}): {meals}\n"
+        
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🗑 Очистить актуальные", callback_data="confirm_clear_curr")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="admin_back")]
@@ -795,11 +799,7 @@ async def do_clear_curr(call: CallbackQuery):
         await db.commit()
     await call.message.edit_text("🗑 Актуальные заявки удалены.", reply_markup=get_admin_kb())
 
-@dp.callback_query(F.data == "admin_back")
-async def admin_back2(call: CallbackQuery):
-    await call.message.edit_text("Выбери раздел:", reply_markup=get_admin_kb())
-
-# ==== ЗАКАЗЫ ====
+# ==== ЗАКАЗЫ (НОВАЯ ЛОГИКА ВРЕМЕНИ) ====
 @dp.message(F.text == "🍽 Сделать заказ")
 async def new_order(message: Message, state: FSMContext):
     async with aiosqlite.connect("orders.db") as db:
@@ -812,10 +812,18 @@ async def new_order(message: Message, state: FSMContext):
     now = datetime.now(NORILSK_TZ)
     dl_h, dl_m = map(int, deadline.split(':'))
     can_today = now.hour < dl_h or (now.hour == dl_h and now.minute < dl_m)
+    can_tomorrow = now.hour >= 11 # Заказ на завтра только с 11:00
+    
     today, tomorrow = now.date(), now.date() + timedelta(days=1)
     kb = []
-    if can_today: kb.append([InlineKeyboardButton(text=f"Сегодня ({today.strftime('%d.%m')})", callback_data=f"date_{today}")])
-    kb.append([InlineKeyboardButton(text=f"Завтра ({tomorrow.strftime('%d.%m')})", callback_data=f"date_{tomorrow}")])
+    if can_today: 
+        kb.append([InlineKeyboardButton(text=f"Сегодня ({today.strftime('%d.%m')})", callback_data=f"date_{today}")])
+    if can_tomorrow: 
+        kb.append([InlineKeyboardButton(text=f"Завтра ({tomorrow.strftime('%d.%m')})", callback_data=f"date_{tomorrow}")])
+    
+    if not kb:
+        return await message.answer("Прием заказов на сегодня уже закрыт (после 8:30), а на завтра откроется в 11:00.")
+        
     kb.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_order")])
     await message.answer("На какую дату заказ?", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     await state.set_state(Order.choosing_date)
@@ -897,8 +905,11 @@ async def my_orders(message: Message):
 
 # ==== ОБРАБОТЧИК КАСТОМНЫХ КНОПОК ====
 @dp.message(F.text, ~F.text.startswith("/"))
-async def handle_custom_buttons(message: Message):
+async def handle_custom_buttons(message: Message, state: FSMContext):
     if message.text in ["🍽 Сделать заказ", "📋 Мои заказы", "👤 Профиль", "🏆 Лидеры", "🆘 Помощь", "🚪 Выйти", "📥 Панель ответственного"]:
+        return
+        
+    if await state.get_state() is not None:
         return
 
     async with aiosqlite.connect("orders.db") as db:
@@ -921,19 +932,23 @@ async def handle_custom_buttons(message: Message):
 
 async def weekly_cleanup():
     while True:
-        now = datetime.now(NORILSK_TZ)
-        if now.weekday() == 6 and now.hour == 0 and now.minute < 5:
-            async with aiosqlite.connect("orders.db") as db:
-                await db.execute("DELETE FROM orders WHERE order_date < ?", (str(now.date()),))
-                await db.execute("DELETE FROM duty WHERE date < ?", (str(now.date()),))
-                await db.commit()
-            await asyncio.sleep(3600)
+        try:
+            now = datetime.now(NORILSK_TZ)
+            if now.weekday() == 6 and now.hour == 0 and now.minute < 5:
+                async with aiosqlite.connect("orders.db") as db:
+                    await db.execute("DELETE FROM orders WHERE order_date < ?", (str(now.date()),))
+                    await db.execute("DELETE FROM duty WHERE date < ?", (str(now.date()),))
+                    await db.commit()
+                await asyncio.sleep(3600)
+        except Exception as e:
+            print(f"Cleanup error: {e}")
         await asyncio.sleep(60)
 
 async def main():
     await init_db()
     Thread(target=run_flask, daemon=True).start()
     asyncio.create_task(weekly_cleanup())
+    print("✅ Бот запущен!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
