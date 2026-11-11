@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 # ==== НАСТРОЙКИ ====
-BOT_TOKEN = "9259003904:AAGO259i8dQHPKln3PQbzDaj0iwkTAHTdt4"
+BOT_TOKEN = "9259003904:AAHHqZ7tE0SOcg--eklhvLhwVCnLMdl58zY"
 NORILSK_TZ = timezone(timedelta(hours=7))
 SECRET_CODES = ["ADMIN77", "BOSS999", "CHEF555", "GURU123"]
 ADMIN_COMMAND = "flvadminpanelArseniy011289serch"
@@ -97,7 +97,6 @@ def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 async def init_db():
-    # ВАЖНО: Удаление базы убрано! Теперь данные сохраняются.
     async with aiosqlite.connect("orders.db") as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
@@ -552,7 +551,7 @@ async def admin_save_menu(message: Message, state: FSMContext):
     await message.answer("✅ Меню обновлено!", reply_markup=await get_main_menu(message.chat.id))
     await state.clear()
 
-# ==== УПРАВЛЕНИЕ КНОПКАМИ (ИСПРАВЛЕНО) ====
+# ==== УПРАВЛЕНИЕ КНОПКАМИ ====
 @dp.callback_query(F.data == "admin_manage_btns")
 async def admin_manage_btns(call: CallbackQuery):
     kb = [
@@ -723,7 +722,6 @@ async def admin_current(call: CallbackQuery):
     today = now.date()
     tomorrow = today + timedelta(days=1)
     
-    # Твоя логика: сегодняшние пропадают в 10:00, завтрашние появляются в 11:00
     show_today = now.hour < 10
     show_tomorrow = now.hour >= 11
     
@@ -743,7 +741,7 @@ async def admin_current(call: CallbackQuery):
         elif o_date == str(tomorrow) and show_tomorrow:
             filtered_orders.append(order)
         elif o_date > str(tomorrow):
-            filtered_orders.append(order) # Будущие заявки (если разрешим заказ на неделю вперед)
+            filtered_orders.append(order)
             
     if not filtered_orders: 
         return await call.message.edit_text("Актуальных заявок нет (сегодняшние скрываются в 10:00, завтрашние появляются в 11:00).", reply_markup=get_admin_kb())
@@ -799,7 +797,7 @@ async def do_clear_curr(call: CallbackQuery):
         await db.commit()
     await call.message.edit_text("🗑 Актуальные заявки удалены.", reply_markup=get_admin_kb())
 
-# ==== ЗАКАЗЫ (НОВАЯ ЛОГИКА ВРЕМЕНИ) ====
+# ==== ЗАКАЗЫ ====
 @dp.message(F.text == "🍽 Сделать заказ")
 async def new_order(message: Message, state: FSMContext):
     async with aiosqlite.connect("orders.db") as db:
@@ -812,7 +810,7 @@ async def new_order(message: Message, state: FSMContext):
     now = datetime.now(NORILSK_TZ)
     dl_h, dl_m = map(int, deadline.split(':'))
     can_today = now.hour < dl_h or (now.hour == dl_h and now.minute < dl_m)
-    can_tomorrow = now.hour >= 11 # Заказ на завтра только с 11:00
+    can_tomorrow = now.hour >= 11
     
     today, tomorrow = now.date(), now.date() + timedelta(days=1)
     kb = []
